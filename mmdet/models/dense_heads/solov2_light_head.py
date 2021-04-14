@@ -308,7 +308,8 @@ class SOLOv2LightHead(nn.Module):
             half_hs = 0.5 * (gt_bboxes[:, 3] - gt_bboxes[:, 1]) * self.sigma
 
             # mass center
-            gt_masks_pt = torch.from_numpy(gt_masks).to(device=device)
+            gt_masks_pt = gt_masks.to_tensor(dtype=torch.float32, device=device)
+            #gt_masks_pt = torch.from_numpy(gt_masks).to(device=device)
             center_ws, center_hs = center_of_mass(gt_masks_pt)
             valid_mask_flags = gt_masks_pt.sum(dim=-1).sum(dim=-1) > 0
             output_stride = 4
