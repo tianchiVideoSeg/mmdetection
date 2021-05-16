@@ -91,11 +91,15 @@ train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
     dict(type='Resize',
-         img_scale=(640,480),
+         img_scale=[(640, 352), (640, 384), (640, 416), (640, 448),
+                    (640, 480), (640, 512)],
+         multiscale_mode='value',
          keep_ratio=True),
     dict(type='RandomFlip', flip_ratio=0.5),
-    dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
+    dict(type='Albu',
+         transforms=albu_train_transforms),
+    dict(type='Normalize', **img_norm_cfg),
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels', 'gt_masks']),
 ]
@@ -103,7 +107,7 @@ val_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
     dict(type='Resize',
-         img_scale=(640,480),
+         img_scale=(1333, 800),
          keep_ratio=True),
     dict(type='RandomFlip', flip_ratio=0.5),
     dict(type='Normalize', **img_norm_cfg),
@@ -115,7 +119,7 @@ test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
         type='MultiScaleFlipAug',
-        img_scale=(1333, 800),
+        img_scale=(640, 480),
         flip=False,
         transforms=[
             dict(type='Resize', keep_ratio=True),
@@ -127,7 +131,7 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    imgs_per_gpu=1,
+    samples_per_gpu=2,
     workers_per_gpu=1,
     train=dict(
         type=dataset_type,
@@ -164,11 +168,11 @@ log_config = dict(
     ])
 # yapf:enable
 # runtime settings
-total_epochs = 40
+total_epochs = 50
 device_ids = range(8)
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-work_dir = '../train_ws/solov2_x101_dcn_fpn_8gpu_3x'
+work_dir = 'train_ws/solov2_x101_dcn_fpn_8gpu_3x'
 load_from = None
-resume_from = '../train_ws/solov2_x101_dcn_fpn_8gpu_3x/epoch_37.pth'
+resume_from = 'checkpoints/SOLOv2_X101_DCN_3x.pth'
 workflow = [('train', 1)]

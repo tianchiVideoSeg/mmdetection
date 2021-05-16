@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from mmcv.cnn import Conv2d, Linear, MaxPool2d, kaiming_init, normal_init
 from mmcv.runner import force_fp32
 from torch.nn.modules.utils import _pair
@@ -23,7 +24,7 @@ class MaskIoUHead(nn.Module):
                  conv_out_channels=256,
                  fc_out_channels=1024,
                  num_classes=80,
-                 loss_iou=dict(type='MSELoss', loss_weight=0.5)):
+                 loss_iou=dict(type='MSELoss', loss_weight=1.0)):
         super(MaskIoUHead, self).__init__()
         self.in_channels = in_channels
         self.conv_out_channels = conv_out_channels
@@ -58,7 +59,7 @@ class MaskIoUHead(nn.Module):
 
         self.fc_mask_iou = Linear(self.fc_out_channels, self.num_classes)
         self.relu = nn.ReLU()
-        self.max_pool = MaxPool2d(2, 2)
+        #self.max_pool = MaxPool2d(2, 2)
         self.loss_iou = build_loss(loss_iou)
 
     def init_weights(self):
@@ -75,9 +76,10 @@ class MaskIoUHead(nn.Module):
 
     def forward(self, mask_feat, mask_pred):
         mask_pred = mask_pred.sigmoid()
-        mask_pred_pooled = self.max_pool(mask_pred.unsqueeze(1))
+        # mask_pred_pooled = self.max_pool(mask_pred.unsqueeze(1))
 
-        x = torch.cat((mask_feat, mask_pred_pooled), 1)
+        x = torch.cat((mask_feat, mask_pred), 1)
+        #x = torch.cat((mask_feat, mask_pred_pooled), 1)
 
         for conv in self.convs:
             x = self.relu(conv(x))

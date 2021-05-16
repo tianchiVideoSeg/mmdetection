@@ -14,6 +14,7 @@ from .mask_heads import (CoarseMaskHead, FCNMaskHead, FeatureRelayHead,
 from .mask_scoring_roi_head import MaskScoringRoIHead
 from .pisa_roi_head import PISARoIHead
 from .point_rend_roi_head import PointRendRoIHead
+from .point_rend_scoring_roi_head import PointRendScoringRoIHead
 from .roi_extractors import SingleRoIExtractor
 from .scnet_roi_head import SCNetRoIHead
 from .shared_heads import ResLayer
@@ -30,5 +31,5 @@ __all__ = [
     'SingleRoIExtractor', 'PISARoIHead', 'PointRendRoIHead', 'MaskPointHead',
     'CoarseMaskHead', 'DynamicRoIHead', 'SparseRoIHead', 'TridentRoIHead',
     'SCNetRoIHead', 'SCNetMaskHead', 'SCNetSemanticHead', 'SCNetBBoxHead',
-    'FeatureRelayHead', 'GlobalContextHead'
+    'FeatureRelayHead', 'GlobalContextHead', 'PointRendScoringRoIHead'
 ]

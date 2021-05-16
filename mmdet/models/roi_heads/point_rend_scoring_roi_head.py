@@ -11,17 +11,26 @@ from .standard_roi_head import StandardRoIHead
 
 
 @HEADS.register_module()
-class PointRendRoIHead(StandardRoIHead):
-    """`PointRend <https://arxiv.org/abs/1912.08193>`_."""
+class PointRendScoringRoIHead(StandardRoIHead):
+    """Combine Mask Scoring RoIHead and PointRend for PointRend Scoring RCNN.
 
-    def __init__(self, point_head, *args, **kwargs):
+    Mask Scoring <https://arxiv.org/abs/1903.00241>
+    PointRend <https://arxiv.org/abs/1912.08193>
+    """
+
+    def __init__(self, point_head, mask_iou_head, *args, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.with_bbox and self.with_mask
         self.init_point_head(point_head)
+        self.init_scoring_head(mask_iou_head)
 
     def init_point_head(self, point_head):
         """Initialize ``point_head``"""
         self.point_head = builder.build_head(point_head)
+
+    def init_scoring_head(self, mask_iou_head):
+        """Initialize ``mask_iou_head``"""
+        self.mask_iou_head = builder.build_head(mask_iou_head)
 
     def init_weights(self, pretrained):
         """Initialize the weights in head.
@@ -31,11 +40,13 @@ class PointRendRoIHead(StandardRoIHead):
         """
         super().init_weights(pretrained)
         self.point_head.init_weights()
+        self.mask_iou_head.init_weights()
 
     def _mask_forward_train(self, x, sampling_results, bbox_feats, gt_masks,
                             img_metas):
         """Run forward function and calculate loss for mask head and point head
         in training."""
+        pos_labels = torch.cat([res.pos_gt_labels for res in sampling_results])
         mask_results = super()._mask_forward_train(x, sampling_results,
                                                    bbox_feats, gt_masks,
                                                    img_metas)
@@ -44,6 +55,27 @@ class PointRendRoIHead(StandardRoIHead):
                 x, sampling_results, mask_results['mask_pred'], gt_masks,
                 img_metas)
             mask_results['loss_mask'].update(loss_point)
+
+        # mask iou head forward and loss
+        pos_mask_pred = mask_results['mask_pred'][
+            range(mask_results['mask_pred'].size(0)), pos_labels]
+        # upsample 2x by point_rend process
+        pos_mask_pred = self._mask_point_forward_once(x, sampling_results,
+                                                      pos_mask_pred, img_metas)
+        mask_iou_pred = self.mask_iou_head(mask_results['mask_feats'],
+                                           pos_mask_pred)
+        pos_mask_iou_pred = mask_iou_pred[range(mask_iou_pred.size(0)),
+                                          pos_labels]
+        # mask_targets get 2x upsampling as well
+        mask_targets = mask_results['mask_targets'].clone()
+        mask_targets = F.interpolate(mask_targets.unsqueeze(1), scale_factor=2,
+                                     mode='bilinear', align_corners=False)
+        mask_iou_targets = self.mask_iou_head.get_targets(
+            sampling_results, gt_masks, pos_mask_pred.squeeze(1),
+            mask_targets.squeeze(1), self.train_cfg)
+        loss_mask_iou = self.mask_iou_head.loss(pos_mask_iou_pred,
+                                                mask_iou_targets)
+        mask_results['loss_mask'].update(loss_mask_iou)
 
         return mask_results
 
@@ -92,6 +124,39 @@ class PointRendRoIHead(StandardRoIHead):
                     point_feats.append(point_feat)
             fine_grained_feats.append(torch.cat(point_feats, dim=0))
         return torch.cat(fine_grained_feats, dim=1)
+
+    def _mask_point_forward_once(self, x, sampling_results, mask_pred,
+                                 img_metas):
+        """Mask refining process once with point head in training."""
+        label_pred = torch.cat([res.pos_gt_labels for res in sampling_results])
+        rois = bbox2roi([res.pos_bboxes for res in sampling_results])
+
+        refined_mask_pred = mask_pred.clone()
+        refined_mask_pred = F.interpolate(
+            refined_mask_pred.unsqueeze(1),
+            scale_factor=self.test_cfg.scale_factor,
+            mode='bilinear',
+            align_corners=False)
+        num_rois, channels, mask_height, mask_width = \
+            refined_mask_pred.shape
+        point_indices, rel_roi_points = \
+            self.point_head.get_roi_rel_points_test(
+                refined_mask_pred, label_pred, cfg=self.test_cfg)
+        fine_grained_point_feats = self._get_fine_grained_point_feats(
+            x, rois, rel_roi_points, img_metas)
+        coarse_point_feats = point_sample(mask_pred.unsqueeze(1), rel_roi_points)
+        mask_point_pred = self.point_head(fine_grained_point_feats,
+                                          coarse_point_feats)
+
+        point_indices = point_indices.unsqueeze(1).expand(-1, channels, -1)
+        refined_mask_pred = refined_mask_pred.reshape(
+            num_rois, channels, mask_height * mask_width)
+        refined_mask_pred = refined_mask_pred.scatter_(
+            2, point_indices, mask_point_pred)
+        refined_mask_pred = refined_mask_pred.view(num_rois, channels,
+                                                   mask_height, mask_width)
+
+        return refined_mask_pred
 
     def _mask_point_forward_test(self, x, rois, label_pred, mask_pred,
                                  img_metas):
@@ -144,6 +209,8 @@ class PointRendRoIHead(StandardRoIHead):
         if all(det_bbox.shape[0] == 0 for det_bbox in det_bboxes):
             segm_results = [[[] for _ in range(self.mask_head.num_classes)]
                             for _ in range(num_imgs)]
+            mask_scores = [[[] for _ in range(self.mask_head.num_classes)]
+                           for _ in range(num_imgs)]
         else:
             # if det_bboxes is rescaled to the original image size, we need to
             # rescale it back to the testing scale to obtain RoIs.
@@ -159,17 +226,27 @@ class PointRendRoIHead(StandardRoIHead):
             ]
             mask_rois = bbox2roi(_bboxes)
             mask_results = self._mask_forward(x, mask_rois)
-            # split batch mask prediction back to each image
+            concat_det_labels = torch.cat(det_labels)
+            # get mask scores with mask iou head
+            mask_feats = mask_results['mask_feats']
             mask_pred = mask_results['mask_pred']
+            #mask_iou_pred = self.mask_iou_head(
+            #    mask_feats, mask_pred[range(concat_det_labels.size(0)),
+            #                          concat_det_labels])
+            # split batch mask prediction back to each image
             num_mask_roi_per_img = [len(det_bbox) for det_bbox in det_bboxes]
             mask_preds = mask_pred.split(num_mask_roi_per_img, 0)
             mask_rois = mask_rois.split(num_mask_roi_per_img, 0)
+            #mask_iou_preds = mask_iou_pred.split(num_mask_roi_per_img, 0)
 
             # apply mask post-processing to each image individually
             segm_results = []
+            mask_scores = []
             for i in range(num_imgs):
                 if det_bboxes[i].shape[0] == 0:
                     segm_results.append(
+                        [[] for _ in range(self.mask_head.num_classes)])
+                    mask_scores.append(
                         [[] for _ in range(self.mask_head.num_classes)])
                 else:
                     x_i = [xx[[i]] for xx in x]
@@ -181,7 +258,12 @@ class PointRendRoIHead(StandardRoIHead):
                     segm_result = self.mask_head.get_seg_masks(
                         mask_pred_i, _bboxes[i], det_labels[i], self.test_cfg,
                         ori_shapes[i], scale_factors[i], rescale)
+                    # get mask scores with mask iou head
+                    #mask_score = self.mask_iou_head.get_mask_scores(
+                    #    mask_iou_preds[i], det_bboxes[i], det_labels[i])
                     segm_results.append(segm_result)
+                    #mask_scores.append(mask_score)
+        #return list(zip(segm_results, mask_scores))
         return segm_results
 
     def aug_test_mask(self, feats, img_metas, det_bboxes, det_labels):

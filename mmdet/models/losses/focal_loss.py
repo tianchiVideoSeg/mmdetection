@@ -102,6 +102,49 @@ def sigmoid_focal_loss(pred,
     return loss
 
 
+def mask_focal_loss(pred,
+                    target,
+                    label=None,
+                    gamma=2.0,
+                    alpha=0.25,
+                    reduction='mean',
+                    avg_factor=None):
+    r"""A warpper of cuda version `Focal Loss
+    <https://arxiv.org/abs/1708.02002>`_.
+
+    Args:
+        pred (torch.Tensor): The prediction with shape (N, C, *), C is the
+            number of classes. The trailing * indicates arbitrary shape.
+        target (torch.Tensor): The learning label of the prediction.
+        label (torch.Tensor): ``label`` indicates the class label of the mask
+            corresponding object. This will be used to select the mask in the
+            of the class which the object belongs to when the mask prediction
+            if not class-agnostic.
+        gamma (float, optional): The gamma for calculating the modulating
+            factor. Defaults to 2.0.
+        alpha (float, optional): A balanced form for Focal Loss.
+            Defaults to 0.25.
+        reduction (str, optional): The method used to reduce the loss into
+            a scalar. Defaults to 'mean'. Options are "none", "mean" and "sum".
+        avg_factor (int, optional): Average factor that is used to average
+            the loss. Defaults to None.
+    """
+    assert reduction == 'mean' and avg_factor is None
+    num_rois = pred.size(0)
+    num_classes = pred.size(1)
+    inds = torch.arange(0, num_rois, dtype=torch.long, device=pred.device)
+    pred_slice = pred[inds, label].squeeze(1)
+    target = (target > .5).cuda()  # necessary?
+    alpha = torch.mul(alpha, target) + torch.mul(1 - alpha, 1 - target)
+    pred_sigmoid = torch.sigmoid(pred_slice)
+    pred_sigmoid = torch.mul(pred_sigmoid, target) + torch.mul(1 - pred_sigmoid, 1 - target)
+    pred_logsigm = torch.log(pred_sigmoid)
+    loss = - torch.mul(torch.pow((1 - pred_sigmoid), gamma), pred_logsigm).squeeze()
+    loss = torch.mul(alpha, loss)
+    loss = weight_reduce_loss(loss, None, reduction, avg_factor)
+    return loss    
+
+
 @LOSSES.register_module()
 class FocalLoss(nn.Module):
 
@@ -128,6 +171,7 @@ class FocalLoss(nn.Module):
         super(FocalLoss, self).__init__()
         assert use_sigmoid is True, 'Only sigmoid focal loss supported now.'
         self.use_sigmoid = use_sigmoid
+        self.use_mask = False
         self.gamma = gamma
         self.alpha = alpha
         self.reduction = reduction
@@ -160,7 +204,10 @@ class FocalLoss(nn.Module):
             reduction_override if reduction_override else self.reduction)
         if self.use_sigmoid:
             if torch.cuda.is_available() and pred.is_cuda:
-                calculate_loss_func = sigmoid_focal_loss
+                if self.use_mask:
+                    calculate_loss_func = mask_focal_loss
+                else:
+                    calculate_loss_func = sigmoid_focal_loss
             else:
                 num_classes = pred.size(1)
                 target = F.one_hot(target, num_classes=num_classes + 1)

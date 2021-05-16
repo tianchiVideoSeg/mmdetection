@@ -1,5 +1,6 @@
 import mmcv
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import normal_init, bias_init_with_prob, ConvModule
@@ -302,14 +303,14 @@ class SOLOv2Head(nn.Module):
                 continue
             gt_bboxes = gt_bboxes_raw[hit_indices]
             gt_labels = gt_labels_raw[hit_indices]
+            gt_masks_raw = np.array(gt_masks_raw)
             gt_masks = gt_masks_raw[hit_indices.cpu().numpy(), ...]
 
             half_ws = 0.5 * (gt_bboxes[:, 2] - gt_bboxes[:, 0]) * self.sigma
             half_hs = 0.5 * (gt_bboxes[:, 3] - gt_bboxes[:, 1]) * self.sigma
 
             # mass center
-            gt_masks_pt = gt_masks.to_tensor(dtype=torch.float32, device=device)
-            #gt_masks_pt = torch.from_numpy(gt_masks).to(dtype=torch.float32, device=device)
+            gt_masks_pt = torch.from_numpy(gt_masks).to(dtype=torch.float32, device=device)
             center_ws, center_hs = center_of_mass(gt_masks_pt)
             valid_mask_flags = gt_masks_pt.sum(dim=-1).sum(dim=-1) > 0
 
